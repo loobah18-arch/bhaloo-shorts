@@ -1,6 +1,7 @@
 {
-  "next_index": 0,
-  "total_videos": 18,
-  "uploaded": [],
-  "history": []
+  "last_run": "2026-09-05 07:22:50",
+  "total_runs": 2,
+  "campaigns_done": [
+    "goli"
+  ]
 }
