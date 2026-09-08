@@ -17,6 +17,12 @@ home, and adding the shorts-specific upload pipeline on top.
 - `scripts/`, `playbook/`, `prompts/`, `automation/`, `tracker/` — the code
   migrated verbatim from `roblox-auto-shorts` (Whop Content Rewards pipeline)
 
+The older Whop-pipeline workflows (`scout.yml`, `weekly-review.yml`,
+`auto-produce.yml`) are preserved too, but their `schedule:` triggers were removed
+so they don't auto-run in this repo — they need API secrets that aren't set here.
+They still run manually via **Actions → Run workflow**. The shorts uploader lives
+in `upload-shorts.yml`.
+
 ## How the scheduled upload works
 
 1. `cron: "23 10 * * *"` fires **every day at 10:23 UTC** (edit in
