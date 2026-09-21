@@ -50,6 +50,9 @@ def clean_prompt_for_video(prompt: str) -> str:
     return cleaned
 
 
+clean_prompt_for_image_gen = clean_prompt_for_video
+
+
 def extract_search_keywords(prompt: str, niche: str = "") -> list:
     """
     Intelligently extracts core subject nouns for video search,

@@ -35,7 +35,7 @@ except ImportError:
     edge_tts = None
 
 import llm_call
-from ai_video_generator import generate_ai_video_track, clean_prompt_for_image_gen
+from ai_video_generator import generate_ai_video_track
 
 OUTPUT_DIR = REPO_ROOT / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
