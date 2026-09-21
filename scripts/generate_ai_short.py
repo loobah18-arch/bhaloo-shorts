@@ -419,7 +419,8 @@ def run_pipeline(
         total_duration=duration,
         output_video_path=video_track_path,
         title=title,
-        script_text=script_text
+        script_text=script_text,
+        niche=concept.get("niche", niche)
     )
     if not ok or not video_track_path.exists():
         raise RuntimeError("AI Video Generator failed to assemble video track.")

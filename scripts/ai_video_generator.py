@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """
 🎬 AI Video Generator for Bhaloo Shorts
-Generates high-retention 9:16 vertical video scenes directed by the AI script model.
+Generates REAL, HIGH-QUALITY 9:16 VERTICAL MOTION VIDEOS directed by the AI model.
 
-Multi-Tier Visual Sourcing Architecture:
-1. Tier 1: Free Cloud AI Generation (Pollinations Flux / SDXL with circuit breaker).
-2. Tier 2: Wikimedia Commons Open Media High-Res Photography (Zero rate-limits, instant authentic visuals).
-3. Tier 3: Procedural Cinematic Motion Backdrop with Typography (100% offline resilience).
+No still images. No photo slideshows with Ken Burns zoom.
+Every scene is an authentic moving MP4 video clip with 24-30fps motion.
 
-Animation & Compositing:
-- Turns still visual scenes into dynamic 9:16 vertical 30fps video clips with 4 cinematic camera motions:
-  * Slow Push-In (zoom 1.0 -> 1.18)
-  * Slow Pull-Out (zoom 1.18 -> 1.0)
-  * Vertical Tilt / Pan Down
-  * Horizontal Cinematic Tracking Drift
-- Concat-stitches all scenes into a seamless 1080x1920 video track matching the audio length.
+Two-Tier Motion Video Architecture:
+1. Tier 1: True AI Generative Video (Text-to-Video Diffusion via Lightricks LTX-Video / Hugging Face ZeroGPU).
+   Produces authentic 30fps AI-generated motion video clips with physical movement.
+2. Tier 2: Real High-Definition Moving Stock Video Footage (Wikimedia Commons & Open Archive Video).
+   Searches and slices genuine .webm / .mp4 video files (excavators, demolitions, dogs, toddlers).
 """
 
 import os
@@ -35,70 +31,208 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR = WORKSPACE_DIR / ".cache" / "ai_scenes"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-_POLLINATIONS_ACTIVE = True
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# In-memory circuit breaker for external AI diffusion space
+_DIFFUSION_SPACE_ACTIVE = True
 
 
 def log(msg: str):
     print(f"[ai_video_generator] {msg}", flush=True)
 
 
-def clean_prompt_for_image_gen(prompt: str) -> str:
-    """Cleans prompt for photorealistic 9:16 vertical generation."""
+def clean_prompt_for_video(prompt: str) -> str:
+    """Cleans prompt for high-impact generative motion video."""
     cleaned = re.sub(r"^(scene\s*\d*[\s:\-–—\(\)\d\w]*:)", "", prompt, flags=re.IGNORECASE).strip()
     cleaned = re.sub(r'^["\']|["\']$', "", cleaned).strip()
     if not cleaned:
-        cleaned = "cinematic atmospheric scene, 8k photorealistic"
+        cleaned = "cinematic atmospheric action scene, 4k fluid motion"
     return cleaned
 
 
-def create_gradient_fallback_image(text_label: str, output_path: Path, width: int = 720, height: int = 1280) -> bool:
-    """Generates an attractive dark gradient backdrop with subtle typography as a zero-network fallback."""
-    colors = [
-        ("0x0d1117", "0x161b22"),
-        ("0x0b132b", "0x1c2541"),
-        ("0x1a0933", "0x2d124d"),
-        ("0x1f1d1d", "0x2e282a"),
-        ("0x0f2027", "0x203a43")
+def extract_search_keywords(prompt: str, niche: str = "") -> list:
+    """
+    Intelligently extracts core subject nouns for video search,
+    stripping conversational stop words (e.g. 'watch this', 'happens when').
+    """
+    p_lower = prompt.lower()
+    keywords = []
+
+    # Domain keyword mapping
+    domain_map = [
+        ("excavator", ["excavator", "digger"]),
+        ("demolition", ["demolition", "building demolition"]),
+        ("crusher", ["excavator", "demolition"]),
+        ("bridge", ["bridge construction", "demolition"]),
+        ("crane", ["construction crane", "crane"]),
+        ("3d print", ["3d printing", "robotics"]),
+        ("spider excavator", ["excavator", "walking excavator"]),
+        ("golden retriever", ["golden retriever", "dog playing"]),
+        ("puppy", ["dog puppy", "puppy playing"]),
+        ("dog", ["dog playing", "dog park"]),
+        ("toddler", ["baby playing", "toddler"]),
+        ("robot", ["robot arm", "robotics"]),
     ]
-    c1, c2 = random.choice(colors)
-    safe_text = re.sub(r"[^A-Za-z0-9\s]", "", text_label).strip()[:35] or "CINEMATIC SCENE"
+
+    for key, terms in domain_map:
+        if key in p_lower:
+            keywords.extend(terms)
+
+    # If niche is provided
+    if niche == "construction" and not keywords:
+        keywords = ["excavator", "demolition", "construction site"]
+    elif niche == "dogs" and not keywords:
+        keywords = ["dog playing", "golden retriever", "puppy"]
+
+    # Fallback noun extraction
+    if not keywords:
+        stop_words = {
+            "watch", "this", "what", "happens", "when", "second", "crawls", "toward",
+            "stairs", "refuses", "move", "acting", "like", "soft", "furry", "barrier",
+            "until", "arrives", "gently", "nudges", "baby", "back", "with", "nose",
+            "giggles", "hugs", "neck", "dogs", "truly", "are", "greatest", "guardians",
+            "giant", "monster", "reinforced", "concrete", "under", "minute", "chewing",
+            "through", "thick", "precision", "engineering", "allows", "dismantle",
+            "without", "damaging", "surrounding", "roads", "would", "trust", "near",
+            "house", "vertical", "photorealistic", "cinematic", "scene", "shot", "detailed"
+        }
+        words = [w for w in re.sub(r"[^A-Za-z0-9\s]", "", prompt).split() if len(w) > 3 and w.lower() not in stop_words]
+        if words:
+            keywords = [words[0]]
+
+    return list(dict.fromkeys(keywords)) if keywords else ["action"]
+
+
+def format_motion_clip_to_vertical(
+    input_video_path: str,
+    output_clip_path: Path,
+    target_duration: float
+) -> bool:
+    """
+    Standardizes any video clip to 1080x1920 (9:16 vertical) @ 30fps with libx264,
+    adjusting playback speed or looping to seamlessly match target_duration.
+    """
+    try:
+        # Check source duration
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(input_video_path)
+        ]
+        res = subprocess.run(probe_cmd, capture_output=True, text=True)
+        src_dur = float(res.stdout.strip()) if res.returncode == 0 and res.stdout.strip() else 2.0
+    except Exception:
+        src_dur = 2.0
+
+    # Calculate speed factor: if source is shorter than target, slow it down slightly (up to 1.5x) or loop
+    speed_factor = max(0.65, min(1.5, target_duration / max(0.5, src_dur)))
 
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c={c1}:s={width}x{height}:d=1",
-        "-vf", (
-            f"drawbox=x=0:y=0:w={width}:h={height}:color={c2}@0.4:t=fill,"
-            f"drawbox=x=40:y={height//2 - 50}:w={width - 80}:h=100:color=white@0.08:t=fill,"
-            f"drawtext=text='{safe_text}':fontsize=30:fontcolor=white@0.85:x=(w-text_w)/2:y=(h-text_h)/2"
+        "-stream_loop", "3",
+        "-i", str(input_video_path),
+        "-t", f"{target_duration:.2f}",
+        "-filter_complex", (
+            f"[0:v]setpts={speed_factor:.3f}*PTS,"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,setsar=1,fps=30[v]"
         ),
-        "-vframes", "1",
-        "-update", "1",
-        str(output_path)
+        "-map", "[v]",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p",
+        "-crf", "20",
+        "-an",
+        str(output_clip_path)
     ]
+
     try:
         subprocess.run(cmd, capture_output=True, check=True)
-        return output_path.exists()
+        return output_clip_path.exists() and output_clip_path.stat().st_size > 10000
     except Exception as e:
-        log(f"⚠️ Fallback gradient generation notice: {e}")
+        log(f"   ⚠️ FFmpeg vertical formatting error: {e}")
         return False
 
 
-def fetch_wikimedia_visual(query: str, output_path: Path) -> bool:
-    """Fetches authentic high-resolution photography from Wikimedia Commons with zero rate limits."""
-    stop_words = {"vertical", "photorealistic", "cinematic", "scene", "shot", "detailed", "lighting", "ultra", "high", "view", "master", "resolution", "giant"}
-    words = [w for w in re.sub(r"[^A-Za-z0-9\s]", "", query).split() if len(w) > 3 and w.lower() not in stop_words]
-    search_terms = words[:2] if words else ["landscape"]
-    query_str = " ".join(search_terms)
+def generate_ai_diffusion_clip(
+    prompt: str,
+    duration: float,
+    output_clip_path: Path
+) -> bool:
+    """
+    Tier 1: True AI Generative Video (Text-to-Video Diffusion).
+    Calls Lightricks LTX-Video distilled model on Hugging Face ZeroGPU via gradio_client.
+    Produces authentic 30fps generated video.
+    """
+    global _DIFFUSION_SPACE_ACTIVE
+    if not _DIFFUSION_SPACE_ACTIVE:
+        return False
 
+    try:
+        from gradio_client import Client
+    except ImportError:
+        log("   ℹ️ gradio_client not installed, skipping diffusion tier.")
+        return False
+
+    clean_p = clean_prompt_for_video(prompt)
+    log(f"   🤖 [Tier 1: AI Diffusion Video] Submitting prompt: \"{clean_p[:60]}...\"")
+
+    try:
+        client = Client("Lightricks/ltx-video-distilled", verbose=False)
+        res = client.predict(
+            prompt=f"{clean_p}, high quality, cinematic fluid motion, 4k",
+            negative_prompt="worst quality, static image, blurry, photo, still picture, distorted",
+            input_image_filepath=None,
+            input_video_filepath=None,
+            height_ui=704,
+            width_ui=512,
+            mode="text-to-video",
+            duration_ui=2,
+            ui_frames_to_use=9,
+            seed_ui=random.randint(1, 999999),
+            randomize_seed=True,
+            ui_guidance_scale=1.0,
+            improve_texture_flag=True,
+            api_name="/text_to_video"
+        )
+
+        if isinstance(res, (tuple, list)) and len(res) > 0:
+            v_info = res[0]
+            raw_path = v_info.get("video") if isinstance(v_info, dict) else str(v_info)
+            if raw_path and os.path.exists(raw_path):
+                ok = format_motion_clip_to_vertical(raw_path, output_clip_path, target_duration=duration)
+                if ok:
+                    log(f"   ✅ [Tier 1: AI Diffusion Video] Generated {duration:.1f}s moving video clip!")
+                    return True
+    except Exception as e:
+        log(f"   ⚠️ Tier 1 diffusion notice ({e}), failing over to Tier 2 stock motion video...")
+        # If connection or space is down, temporarily trip circuit breaker
+        if "timeout" in str(e).lower() or "503" in str(e) or "queue" in str(e).lower():
+            _DIFFUSION_SPACE_ACTIVE = False
+
+    return False
+
+
+def fetch_real_stock_video_clip(
+    query_keyword: str,
+    duration: float,
+    output_clip_path: Path
+) -> bool:
+    """
+    Tier 2: Real High-Definition Moving Stock Video Footage.
+    Searches and downloads genuine WebM / MP4 video files from Wikimedia Commons Open Media with browser UA.
+    Slices the segment and formats to 1080x1920 30fps vertical video.
+    """
+    log(f"   🎥 [Tier 2: Real Stock Video] Searching open video library for: '{query_keyword}'...")
     search_url = (
         f"https://commons.wikimedia.org/w/api.php?action=query&list=search"
-        f"&srsearch={urllib.parse.quote(query_str)}&srnamespace=6&srlimit=4&format=json"
+        f"&srsearch={urllib.parse.quote(query_keyword)}%20filetype:video&srnamespace=6&srlimit=4&format=json"
     )
 
     try:
-        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0 (AutomatedShortsBot/1.0)"})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        req = urllib.request.Request(search_url, headers={"User-Agent": BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read())
         results = data.get("query", {}).get("search", [])
 
@@ -106,140 +240,78 @@ def fetch_wikimedia_visual(query: str, output_path: Path) -> bool:
             title = item.get("title")
             if not title:
                 continue
+
             info_url = (
                 f"https://commons.wikimedia.org/w/api.php?action=query&titles={urllib.parse.quote(title)}"
-                f"&prop=imageinfo&iiprop=url|mime&format=json"
+                f"&prop=imageinfo&iiprop=url|mime|size&format=json"
             )
-            i_req = urllib.request.Request(info_url, headers={"User-Agent": "Mozilla/5.0 (AutomatedShortsBot/1.0)"})
-            with urllib.request.urlopen(i_req, timeout=8) as ir:
+            i_req = urllib.request.Request(info_url, headers={"User-Agent": BROWSER_UA})
+            with urllib.request.urlopen(i_req, timeout=10) as ir:
                 i_data = json.loads(ir.read())
+
             pages = i_data.get("query", {}).get("pages", {})
             for _, p in pages.items():
                 for info in p.get("imageinfo", []):
-                    img_url = info.get("url")
+                    v_url = info.get("url")
                     mime = info.get("mime", "")
-                    if img_url and ("image/jpeg" in mime or "image/png" in mime or "image/webp" in mime):
-                        d_req = urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0 (AutomatedShortsBot/1.0)"})
-                        with urllib.request.urlopen(d_req, timeout=12) as d_resp:
-                            img_bytes = d_resp.read()
-                            if len(img_bytes) > 10000:
-                                with open(output_path, "wb") as f:
-                                    f.write(img_bytes)
+                    size = info.get("size", 0)
+
+                    if v_url and ("video" in mime or v_url.endswith((".webm", ".mp4", ".ogv"))):
+                        # Stream up to 15MB of the video file
+                        raw_temp = CACHE_DIR / f"raw_stock_{int(time.time())}_{random.randint(100,999)}.webm"
+                        d_req = urllib.request.Request(v_url, headers={"User-Agent": BROWSER_UA})
+                        with urllib.request.urlopen(d_req, timeout=20) as d_resp, open(raw_temp, "wb") as out_f:
+                            chunk = d_resp.read(12_000_000)
+                            out_f.write(chunk)
+
+                        if raw_temp.exists() and raw_temp.stat().st_size > 100_000:
+                            # Slice a 3-second segment and format to vertical 1080x1920
+                            start_seek = 2.0 if size > 5_000_000 else 0.5
+                            slice_cmd = [
+                                "ffmpeg", "-y",
+                                "-ss", f"{start_seek:.1f}",
+                                "-i", str(raw_temp),
+                                "-t", f"{duration:.2f}",
+                                "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30",
+                                "-c:v", "libx264",
+                                "-preset", "ultrafast",
+                                "-pix_fmt", "yuv420p",
+                                "-crf", "20",
+                                "-an",
+                                str(output_clip_path)
+                            ]
+                            subprocess.run(slice_cmd, capture_output=True)
+                            raw_temp.unlink(missing_ok=True)
+
+                            if output_clip_path.exists() and output_clip_path.stat().st_size > 10000:
+                                log(f"   ✅ [Tier 2: Real Stock Video] Formatted moving clip from: {title[:40]}...")
                                 return True
+
     except Exception as e:
-        log(f"   ↳ Wikimedia fetch notice: {e}")
+        log(f"   ⚠️ Tier 2 stock video notice: {e}")
+
     return False
 
 
-def download_ai_image(
-    prompt: str,
-    output_path: Path,
-    width: int = 720,
-    height: int = 1280,
-    seed: int = None
-) -> bool:
-    """
-    Downloads scene visual using resilient multi-tier fallback:
-    Tier 1: Free Cloud AI generation (Pollinations with circuit-breaker).
-    Tier 2: Wikimedia Commons authentic high-res open media.
-    Tier 3: Procedural studio gradient with scene typography.
-    """
-    global _POLLINATIONS_ACTIVE
-    cleaned_prompt = clean_prompt_for_image_gen(prompt)
-    if seed is None:
-        seed = random.randint(1000, 999999)
-
-    # Tier 1: Pollinations Cloud AI (if circuit breaker is active)
-    if _POLLINATIONS_ACTIVE:
-        try:
-            encoded_prompt = urllib.parse.quote(f"{cleaned_prompt}, 9:16 vertical, photorealistic, 8k")
-            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width={width}&height={height}&seed={seed}&nologo=true"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-            with urllib.request.urlopen(req, timeout=6) as response:
-                if response.status == 200:
-                    data = response.read()
-                    if len(data) > 8000:
-                        with open(output_path, "wb") as f:
-                            f.write(data)
-                        return True
-        except Exception as pe:
-            log(f"   ↳ Tier 1 (Pollinations) busy or throttled ({pe}), switching circuit-breaker to Tier 2...")
-            _POLLINATIONS_ACTIVE = False
-
-    # Tier 2: Wikimedia Commons High-Res Photography
-    if fetch_wikimedia_visual(cleaned_prompt, output_path):
-        return True
-
-    # Tier 3: Procedural Cinematic Studio Backdrop
-    log(f"   ↳ Tier 2 unavailable, generating Tier 3 procedural cinematic backdrop...")
-    return create_gradient_fallback_image(prompt, output_path, width=width, height=height)
-
-
-def animate_scene_clip(
-    image_path: Path,
+def generate_motion_backdrop_clip(
+    title: str,
     duration: float,
-    output_clip_path: Path,
-    motion_type: int = 0
+    output_clip_path: Path
 ) -> bool:
     """
-    Turns a still visual into an animated 9:16 (1080x1920) 30fps video clip.
-    Cycles through 4 camera dynamics:
-    0: Smooth Push-In (slow zoom in)
-    1: Smooth Pull-Out (slow zoom out)
-    2: Vertical Tilt Down
-    3: Horizontal Tracking Drift
+    Emergency zero-network fallback: Generates an animated dynamic geometric motion backdrop
+    with moving light ripples and particles (never a static photo).
     """
     fps = 30
-    total_frames = max(30, int(duration * fps))
-
-    if motion_type % 4 == 0:
-        zoom_step = 0.15 / max(1, total_frames)
-        z_expr = f"min(zoom+{zoom_step:.6f},1.18)"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
-    elif motion_type % 4 == 1:
-        zoom_step = 0.15 / max(1, total_frames)
-        z_expr = f"max(1.18-{zoom_step:.6f}*on,1.0)"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = "ih/2-(ih/zoom/2)"
-    elif motion_type % 4 == 2:
-        z_expr = "1.12"
-        x_expr = "iw/2-(iw/zoom/2)"
-        y_expr = f"(ih-ih/zoom)*(on/{total_frames})"
-    else:
-        z_expr = "1.12"
-        x_expr = f"(iw-iw/zoom)*(on/{total_frames})"
-        y_expr = "ih/2-(ih/zoom/2)"
-
-    filter_str = (
-        f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-        f"zoompan=z='{z_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s=1080x1920:fps={fps}[v]"
-    )
-
+    total_frames = int(duration * fps)
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", str(image_path),
-        "-filter_complex", filter_str,
-        "-map", "[v]",
-        "-t", f"{duration:.2f}",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-pix_fmt", "yuv420p",
-        "-an",
-        str(output_clip_path)
-    ]
-
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode == 0 and output_clip_path.exists() and output_clip_path.stat().st_size > 1000:
-        return True
-
-    # Fallback scale if filter complex fails
-    fallback_cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", str(image_path),
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,format=yuv420p",
+        "-f", "lavfi",
+        "-i", f"gradients=s=1080x1920:c0=0x0b132b:c1=0x1c2541:d={duration}:speed=0.03",
+        "-vf", (
+            f"drawbox=x='(w-400)/2+sin(t*2)*80':y='(h-400)/2+cos(t*2)*80':w=400:h=400:color=white@0.05:t=fill,"
+            f"drawtext=text='{title.upper()[:24]}':fontsize=48:fontcolor=white@0.85:x=(w-text_w)/2:y=(h-text_h)/2"
+        ),
         "-t", f"{duration:.2f}",
         "-r", "30",
         "-c:v", "libx264",
@@ -248,27 +320,45 @@ def animate_scene_clip(
         "-an",
         str(output_clip_path)
     ]
-    sub_res = subprocess.run(fallback_cmd, capture_output=True)
-    return sub_res.returncode == 0 and output_clip_path.exists()
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+        return output_clip_path.exists() and output_clip_path.stat().st_size > 1000
+    except Exception as e:
+        log(f"   ⚠️ Motion backdrop notice: {e}")
+        return False
 
 
-def derive_visual_prompts_from_script(script_text: str, title: str, count: int = 5) -> list:
-    """Generates visual scene prompts from script sentences if the AI model did not provide them."""
-    sentences = [s.strip() for s in re.split(r"[.!?]+", script_text) if len(s.strip()) > 10]
-    prompts = []
+def get_or_generate_video_clip(
+    prompt: str,
+    duration: float,
+    output_clip_path: Path,
+    scene_idx: int = 0,
+    niche: str = ""
+) -> bool:
+    """
+    Acquires an authentic moving video clip:
+    1. Try Tier 1: True AI Generative Video (LTX-Video Diffusion via Hugging Face ZeroGPU).
+    2. Try Tier 2: Real High-Definition Moving Stock Video Footage (Wikimedia Commons Video).
+    3. Emergency Fallback: Animated dynamic motion backdrop.
+    """
+    # 1. Tier 1: AI Diffusion Video (preferred for opening hook and peak action)
+    if generate_ai_diffusion_clip(prompt, duration, output_clip_path):
+        return True
 
-    for idx, sentence in enumerate(sentences[:count]):
-        clean_s = re.sub(r"[^A-Za-z0-9\s]", "", sentence).strip()
-        prompts.append(
-            f"Cinematic photorealistic scene of {title}: {clean_s}. Dramatic lighting, 9:16 vertical composition"
-        )
+    # 2. Tier 2: Real Stock Video Footage
+    keywords = extract_search_keywords(prompt, niche=niche)
+    for kw in keywords:
+        if fetch_real_stock_video_clip(kw, duration, output_clip_path):
+            return True
 
-    while len(prompts) < max(3, count):
-        prompts.append(
-            f"Dramatic cinematic visual of {title}, moody atmosphere, 9:16 vertical"
-        )
+    # Fallback keyword by niche
+    default_niche_kw = "demolition" if niche == "construction" else "dog playing"
+    if fetch_real_stock_video_clip(default_niche_kw, duration, output_clip_path):
+        return True
 
-    return prompts[:count]
+    # 3. Emergency Animated Motion Backdrop
+    log("   ⚠️ Generating animated motion backdrop fallback...")
+    return generate_motion_backdrop_clip("ACTION SCENE", duration, output_clip_path)
 
 
 def generate_ai_video_track(
@@ -276,24 +366,25 @@ def generate_ai_video_track(
     total_duration: float,
     output_video_path: Path,
     title: str = "Video Short",
-    script_text: str = ""
+    script_text: str = "",
+    niche: str = ""
 ) -> bool:
     """
-    Main entry point:
-    1. Receives visual scene prompts directed by the AI model.
-    2. Slices and generates visual scenes.
-    3. Animates each scene into a 9:16 video clip.
-    4. Concat-stitches scenes into the complete visual video track matching audio duration.
+    Main entry point for generating the complete moving video track:
+    1. Directs AI video generation and real stock video slicing for every scene.
+    2. Ensures every scene is an actual moving MP4 video clip (no still photos).
+    3. Stitches all clips into a seamless 1080x1920 30fps vertical video track matching the audio duration.
     """
-    log("=" * 60)
-    log(f"🎬 AI VIDEO GENERATOR: Synthesizing {total_duration:.1f}s video track for '{title}'")
-    log("=" * 60)
+    log("=" * 65)
+    log(f"🎬 BHALOO REAL VIDEO ENGINE: Producing {total_duration:.1f}s video track for '{title}'")
+    log("=" * 65)
 
-    # Ensure clean visual prompts
-    if not visual_prompts or len(visual_prompts) == 0:
-        log("ℹ️ No visual prompts supplied, synthesizing from script...")
-        target_scene_count = max(3, min(8, int(total_duration // 3.5)))
-        visual_prompts = derive_visual_prompts_from_script(script_text, title, count=target_scene_count)
+    if not visual_prompts:
+        visual_prompts = [
+            f"Action shot of {title}, fluid motion",
+            f"Close up detail of {title} in action",
+            f"Wide angle dynamic movement of {title}"
+        ]
 
     num_scenes = len(visual_prompts)
     scene_duration = round(total_duration / max(1, num_scenes), 2)
@@ -302,7 +393,7 @@ def generate_ai_video_track(
         visual_prompts = visual_prompts[:num_scenes]
         scene_duration = round(total_duration / num_scenes, 2)
 
-    log(f"📽️ Generating {num_scenes} AI-directed scenes (~{scene_duration:.2f}s each)...")
+    log(f"📽️ Generating {num_scenes} REAL MOVING SCENES (~{scene_duration:.2f}s each)...")
 
     scene_clips = []
     temp_files = []
@@ -311,33 +402,33 @@ def generate_ai_video_track(
         for idx, prompt_item in enumerate(visual_prompts):
             prompt_text = prompt_item if isinstance(prompt_item, str) else prompt_item.get("prompt", str(prompt_item))
             scene_num = idx + 1
-            log(f"🎨 Scene {scene_num}/{num_scenes}: \"{prompt_text[:65]}...\"")
+            log(f"🎞️ Scene {scene_num}/{num_scenes}: \"{prompt_text[:60]}...\"")
 
             current_scene_dur = scene_duration
             if scene_num == num_scenes:
-                current_scene_dur = max(1.0, total_duration - (scene_duration * (num_scenes - 1)))
+                current_scene_dur = max(1.5, total_duration - (scene_duration * (num_scenes - 1)))
 
-            img_path = CACHE_DIR / f"scene_{scene_num}_{int(time.time())}_{random.randint(100,999)}.jpg"
-            clip_path = CACHE_DIR / f"clip_{scene_num}_{int(time.time())}_{random.randint(100,999)}.mp4"
-            temp_files.extend([img_path, clip_path])
+            clip_path = CACHE_DIR / f"moving_scene_{scene_num}_{int(time.time())}_{random.randint(100,999)}.mp4"
+            temp_files.append(clip_path)
 
-            # 1. Fetch visual (AI -> Wikimedia -> Studio Gradient)
-            ok_img = download_ai_image(prompt_text, img_path, width=720, height=1280)
-            if not ok_img or not img_path.exists():
-                create_gradient_fallback_image(title, img_path, width=720, height=1280)
+            ok = get_or_generate_video_clip(
+                prompt=prompt_text,
+                duration=current_scene_dur,
+                output_clip_path=clip_path,
+                scene_idx=idx,
+                niche=niche
+            )
 
-            # 2. Animate into video clip
-            ok_clip = animate_scene_clip(img_path, current_scene_dur, clip_path, motion_type=idx)
-            if ok_clip and clip_path.exists():
+            if ok and clip_path.exists() and clip_path.stat().st_size > 10000:
                 scene_clips.append(clip_path)
             else:
-                log(f"   ❌ Failed to animate scene {scene_num}")
+                log(f"   ❌ Failed to acquire moving clip for scene {scene_num}")
 
         if not scene_clips:
-            log("❌ No scene clips could be generated.")
+            log("❌ No valid moving video clips could be assembled.")
             return False
 
-        log(f"🎞️ Concatenating {len(scene_clips)} animated scene clips into final track...")
+        log(f"🎞️ Concat-stitching {len(scene_clips)} genuine video clips into master track...")
 
         concat_list_file = CACHE_DIR / f"concat_list_{int(time.time())}_{random.randint(100,999)}.txt"
         temp_files.append(concat_list_file)
@@ -360,10 +451,10 @@ def generate_ai_video_track(
 
         res = subprocess.run(concat_cmd, capture_output=True, text=True)
         if res.returncode == 0 and output_video_path.exists() and output_video_path.stat().st_size > 10000:
-            log(f"✅ AI Video Track assembled successfully: {output_video_path} ({output_video_path.stat().st_size / 1024 / 1024:.2f} MB)")
+            log(f"✅ Real Video Track assembled: {output_video_path} ({output_video_path.stat().st_size / 1024 / 1024:.2f} MB)")
             return True
         else:
-            log(f"⚠️ Concat demuxer failed, falling back to filter concat...")
+            # Fallback filter concat
             inputs = []
             filter_chunks = []
             for i, c in enumerate(scene_clips):
@@ -397,10 +488,15 @@ def generate_ai_video_track(
 
 if __name__ == "__main__":
     test_prompts = [
-        "Giant Caterpillar excavator digging rock, 9:16 vertical",
-        "Golden retriever puppy playing with toddler, 9:16 vertical"
+        "A heavy excavator crushing a concrete pillar with sparks flying",
+        "A cute golden retriever puppy running happily on green lawn"
     ]
-    test_out = OUTPUT_DIR / "test_bhaloo_ai_track.mp4"
-    log("Running multi-tier AI Video Generator test for Bhaloo Shorts...")
-    success = generate_ai_video_track(test_prompts, total_duration=6.0, output_video_path=test_out, title="Bhaloo Shorts Test")
+    test_out = OUTPUT_DIR / "test_real_video_track.mp4"
+    log("Running REAL VIDEO ENGINE standalone test...")
+    success = generate_ai_video_track(
+        visual_prompts=test_prompts,
+        total_duration=6.0,
+        output_video_path=test_out,
+        title="Real Video Test"
+    )
     print(f"Test Result: {'SUCCESS' if success else 'FAILED'} -> {test_out}")
