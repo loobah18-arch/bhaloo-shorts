@@ -527,13 +527,28 @@ def main() -> int:
                         "path": src, "query": None}
             used += 1
         else:
-            # no more campaign footage — flag photo slots, text cards fall back
-            # to the renderer (never stock photos)
-            entry: dict = {"kind": s["visual"], "media": "image", "src": "render",
-                           "path": None, "query": None}
-            if n in photo_slot_nums:
-                entry["needs_media"] = True
-            index[n] = entry
+            # Generate AI scene visual directed by the AI model slide notes & text
+            prompt_cue = f"{s.get('text', '')} {s.get('notes', '')} {s.get('visual', '')}"
+            ai_img_name = f"ai_slide_{n}.jpg"
+            ai_img_path = os.path.join(raw_dir, ai_img_name)
+            ai_generated = False
+            try:
+                from ai_video_generator import download_ai_image
+                from pathlib import Path
+                ok = download_ai_image(prompt_cue, Path(ai_img_path))
+                if ok and os.path.exists(ai_img_path):
+                    src = os.path.join("assets", "raw", ai_img_name)
+                    index[n] = {"kind": s["visual"], "media": "image", "src": "local",
+                                "path": src, "query": prompt_cue}
+                    ai_generated = True
+            except Exception as e:
+                print(f"AI image gen notice: {e}")
+            if not ai_generated:
+                entry: dict = {"kind": s["visual"], "media": "image", "src": "render",
+                               "path": None, "query": None}
+                if n in photo_slot_nums:
+                    entry["needs_media"] = True
+                index[n] = entry
 
     # report what we got
     local_count = sum(1 for v in index.values() if v["src"] == "local")

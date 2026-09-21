@@ -1,0 +1,90 @@
+name: "🎬 Bhaloo AI Shorts — Automated Cloud Video Engine"
+
+on:
+  schedule:
+    # Runs daily at 04:30 UTC (off-peak minute)
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Custom topic or leave blank for automatic catalog rotation"
+        required: false
+        type: string
+      niche:
+        description: "Content niche"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "construction"
+          - "dogs"
+      upload_to_youtube:
+        description: "Upload finished Short directly to YouTube (default: false for preview)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  produce_short:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 📦 Install System Dependencies & FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core
+
+      - name: 📦 Install Python Requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install edge-tts pillow
+
+      - name: 🚀 Run AI Short Generator (Directed by AI Model)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+          INPUT_TOPIC: ${{ inputs.topic }}
+          INPUT_NICHE: ${{ inputs.niche }}
+        run: |
+          echo "🎬 Generating viral Short in the cloud (zero phone load)..."
+          ARGS=()
+          if [ -n "$INPUT_TOPIC" ]; then ARGS+=(--topic "$INPUT_TOPIC"); fi
+          if [ -n "$INPUT_NICHE" ] && [ "$INPUT_NICHE" != "all" ]; then ARGS+=(--niche "$INPUT_NICHE"); fi
+
+          python3 scripts/generate_ai_short.py "${ARGS[@]}"
+
+      - name: 📤 Upload Generated Video Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bhaloo-ai-short
+          path: |
+            output/bhaloo_short_*.mp4
+          retention-days: 14
+
+      - name: 💾 Commit Updated Tracker & History
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          TARGET_BRANCH="${GITHUB_REF_NAME:-main}"
+          git add tracker/ai_shorts_history.json || true
+          git commit -m "🤖 Auto: update Bhaloo AI Shorts history [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin "$TARGET_BRANCH" || true
+          git push origin "HEAD:$TARGET_BRANCH" || echo "Push skipped"
